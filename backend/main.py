@@ -26,7 +26,7 @@ import models
 from models import write_audit
 from policy_engine import DEFAULT_POLICY, validate_policy, evaluate
 import agent as agent_mod
-from paypal_service import paypal
+from paypal_service import paypal, PayPalAPIError
 from seed import reset_demo
 
 app = FastAPI(title="VaultPay Agent")
@@ -89,28 +89,69 @@ def _active_policy(db) -> dict:
 
 
 # ---------------------------------------------------------------- tasks --
-def _pay_for_candidate(db, task, cand, item) -> models.Order:
-    created = paypal.create_order(float(item["price"]), item["name"], custom_id=str(task.id))
+def _pay_for_candidate(db, task, cand, item):
+    """Start payment for an approved candidate.
+
+    Mock mode: create + capture in one step (simulated COMPLETED).
+    Real mode: create the order and STOP at CREATED - PayPal requires the
+    payer to approve the order first; capture happens only via
+    POST /api/orders/{paypal_order_id}/capture after that approval.
+    PayPal API errors are audited (FAILED) instead of crashing the task.
+    """
+    try:
+        created = paypal.create_order(float(item["price"]), item["name"], custom_id=str(task.id))
+    except Exception as e:  # PayPalAPIError or transport error - no order exists
+        cand.status = "FAILED"
+        write_audit(db, "FAILED",
+                    f"FAILED: PayPal could not create an order for {item['name']}: {e}",
+                    task_id=task.id)
+        db.commit()
+        return None
     order = models.Order(task_id=task.id, candidate_id=cand.id,
                          paypal_order_id=created["id"], amount=float(item["price"]),
-                         status="CREATED")
+                         approve_link=created.get("approve_link"), status="CREATED")
     db.add(order); db.commit(); db.refresh(order)
-    result = paypal.capture_order(created["id"], expected_amount=float(item["price"]))
+    if created.get("mock"):
+        _capture_order(db, task, cand, order)
+    else:
+        cand.status = "AWAITING_PAYER_APPROVAL"
+        write_audit(db, "INFO",
+                    f"PayPal order {created['id']} created for {item['name']} "
+                    f"(${float(item['price']):.2f}) - waiting for the buyer to approve it "
+                    f"on PayPal, then capture.", task_id=task.id)
+        db.commit()
+    return order
+
+
+def _capture_order(db, task, cand, order):
+    """Capture a created order; on success mark everything PAID exactly once."""
+    if order.status == "PAID":
+        return {"id": order.paypal_order_id, "status": "COMPLETED", "already": True}
+    try:
+        result = paypal.capture_order(order.paypal_order_id, expected_amount=float(order.amount))
+    except Exception as e:  # e.g. ORDER_NOT_APPROVED when payer has not approved yet
+        write_audit(db, "FAILED",
+                    f"FAILED: capture of order {order.paypal_order_id} was refused: {e}",
+                    task_id=task.id)
+        db.commit()
+        return {"id": order.paypal_order_id, "status": "CAPTURE_REFUSED", "error": str(e)}
     if result["status"] == "COMPLETED":
         order.status = "PAID"
         cand.status = "PAID"
-        task.spent_total = round(task.spent_total + float(item["price"]), 2)
+        task.spent_total = round(task.spent_total + float(order.amount), 2)
+        if task.status in ("WAITING_PAYPAL", "WAITING_APPROVAL"):
+            task.status = "COMPLETED"
         write_audit(db, "PAID",
-                    f"PAID: {item['name']} - ${float(item['price']):.2f} captured via PayPal "
-                    f"(order {created['id']}, status COMPLETED).", task_id=task.id)
+                    f"PAID: ${float(order.amount):.2f} captured via PayPal "
+                    f"(order {order.paypal_order_id}, status COMPLETED).", task_id=task.id)
     else:
         order.status = "FAILED"
         cand.status = "FAILED"
         write_audit(db, "FAILED",
-                    f"FAILED: capture for {item['name']} returned {result['status']}; not retried silently.",
-                    task_id=task.id)
+                    f"FAILED: capture for order {order.paypal_order_id} returned "
+                    f"{result['status']}; not retried silently.", task_id=task.id)
     db.commit()
-    return order
+    return result
 
 
 @app.post("/api/tasks")
@@ -132,7 +173,7 @@ def create_task(body: dict, db: Session = Depends(get_db)):
         db.commit()
         return {"task_id": task.id, "status": task.status}
 
-    paused = paid = denied = False
+    paused = paid = denied = awaiting = False
     for item in candidates:
         verdict = evaluate(policy, item, task.spent_total)
         cand = models.Candidate(task_id=task.id, item_id=item["id"],
@@ -154,9 +195,12 @@ def create_task(body: dict, db: Session = Depends(get_db)):
         # ALLOW
         _pay_for_candidate(db, task, cand, item)
         paid = cand.status == "PAID"
+        awaiting = cand.status == "AWAITING_PAYER_APPROVAL"
         break  # one purchase per task run unless quantity handling is added
 
-    task.status = "WAITING_APPROVAL" if paused else ("COMPLETED" if paid else "BLOCKED")
+    task.status = ("WAITING_APPROVAL" if paused else
+                   "WAITING_PAYPAL" if awaiting else
+                   ("COMPLETED" if paid else "BLOCKED"))
     events = [e.to_dict() for e in db.query(models.AuditEvent).filter_by(task_id=task.id).all()]
     task.summary = agent_mod.explain(prompt, events)
     db.commit()
@@ -170,11 +214,18 @@ def get_task(task_id: int, db: Session = Depends(get_db)):
     if not task:
         raise HTTPException(404, "task not found")
     cands = db.query(models.Candidate).filter_by(task_id=task_id).all()
+    out = []
+    for c in cands:
+        order = db.query(models.Order).filter_by(candidate_id=c.id).first()
+        out.append({"id": c.id, "item": c.item(), "verdict": c.verdict,
+                    "reason": c.reason, "status": c.status,
+                    "justification": c.justification,
+                    "order": ({"paypal_order_id": order.paypal_order_id,
+                               "status": order.status,
+                               "approve_link": order.approve_link} if order else None)})
     return {"id": task.id, "prompt": task.prompt, "status": task.status,
             "spent_total": task.spent_total, "summary": task.summary,
-            "candidates": [{"id": c.id, "item": c.item(), "verdict": c.verdict,
-                            "reason": c.reason, "status": c.status,
-                            "justification": c.justification} for c in cands]}
+            "candidates": out}
 
 
 # ------------------------------------------------------------ approvals --
@@ -203,7 +254,9 @@ def decide_approval(approval_id: int, body: dict, db: Session = Depends(get_db))
         ap.status = "APPROVED"; db.commit()
         _pay_for_candidate(db, task, cand, item)
         if task.status == "WAITING_APPROVAL":
-            task.status = "COMPLETED" if cand.status == "PAID" else task.status
+            task.status = ("COMPLETED" if cand.status == "PAID" else
+                           "WAITING_PAYPAL" if cand.status == "AWAITING_PAYER_APPROVAL"
+                           else task.status)
             db.commit()
         return {"id": ap.id, "status": ap.status, "candidate_status": cand.status,
                 "spent_total": task.spent_total}
@@ -214,6 +267,22 @@ def decide_approval(approval_id: int, body: dict, db: Session = Depends(get_db))
             task.status = "BLOCKED"; db.commit()
         return {"id": ap.id, "status": ap.status, "candidate_status": cand.status}
     raise HTTPException(400, "decision must be APPROVE or REJECT")
+
+
+# --------------------------------------------------------------- orders --
+@app.post("/api/orders/{paypal_order_id}/capture")
+def capture(paypal_order_id: str, db: Session = Depends(get_db)):
+    """Capture after the payer approved the order on PayPal (real mode)."""
+    order = db.query(models.Order).filter_by(paypal_order_id=paypal_order_id).first()
+    if not order:
+        raise HTTPException(404, "order not found")
+    task = db.query(models.Task).get(order.task_id)
+    cand = db.query(models.Candidate).get(order.candidate_id)
+    result = _capture_order(db, task, cand, order)
+    return {"paypal_order_id": paypal_order_id, "status": result.get("status"),
+            "order_status": order.status, "task_status": task.status if task else None,
+            "spent_total": task.spent_total if task else None,
+            **({"error": result["error"]} if result.get("error") else {})}
 
 
 # -------------------------------------------------------------- webhook --

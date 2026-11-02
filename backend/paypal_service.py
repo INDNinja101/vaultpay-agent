@@ -15,6 +15,31 @@ def _env(name, default=""):
     return os.environ.get(name, default).strip()
 
 
+class PayPalAPIError(Exception):
+    """PayPal HTTP error surfaced safely: carries the API's own error
+    name/message (never credentials) so callers can audit it."""
+
+    def __init__(self, step: str, response):
+        self.step = step
+        self.status_code = response.status_code
+        try:
+            data = response.json()
+        except Exception:
+            data = {}
+        self.name = data.get("name") or data.get("error") or "UNKNOWN"
+        self.message = data.get("message") or data.get("error_description") or ""
+        details = data.get("details") or []
+        self.issue = details[0].get("issue", "") if details else ""
+        super().__init__(
+            f"PayPal {step} failed: HTTP {self.status_code} {self.name} "
+            f"{self.issue} {self.message}".strip())
+
+
+def _raise_for_status(step: str, response):
+    if response.status_code >= 400:
+        raise PayPalAPIError(step, response)
+
+
 class PayPalService:
     def __init__(self):
         self.client_id = _env("PAYPAL_CLIENT_ID")
@@ -35,7 +60,7 @@ class PayPalService:
                        data={"grant_type": "client_credentials"},
                        auth=(self.client_id, self.client_secret),
                        headers={"Accept": "application/json"}, timeout=30)
-        r.raise_for_status()
+        _raise_for_status("oauth token", r)
         data = r.json()
         self._token = data["access_token"]
         self._token_exp = time.time() + int(data.get("expires_in", 3600))
@@ -60,7 +85,7 @@ class PayPalService:
                                     "description": description[:127], "custom_id": str(custom_id)}]}
         r = httpx.post(f"{self.base_url}/v2/checkout/orders", json=body,
                        headers=self._headers(), timeout=30)
-        r.raise_for_status()
+        _raise_for_status("create order", r)
         data = r.json()
         link = next((l["href"] for l in data.get("links", []) if l.get("rel") == "approve"), None)
         return {"id": data["id"], "status": data.get("status", "CREATED"),
@@ -76,7 +101,7 @@ class PayPalService:
             return {"id": order_id, "status": "COMPLETED", "amount": amount, "mock": True}
         r = httpx.post(f"{self.base_url}/v2/checkout/orders/{order_id}/capture",
                        headers=self._headers(), timeout=30)
-        r.raise_for_status()
+        _raise_for_status("capture order", r)
         data = r.json()
         captured = None
         try:

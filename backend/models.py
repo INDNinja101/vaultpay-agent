@@ -70,6 +70,7 @@ class Order(Base):
     candidate_id = Column(Integer)
     paypal_order_id = Column(String, unique=True, nullable=False)
     amount = Column(Float, nullable=False)
+    approve_link = Column(Text, nullable=True)  # payer approval URL (real mode)
     status = Column(String, default="CREATED")  # CREATED|PAID|FAILED
     created_at = Column(DateTime, default=_now)
 

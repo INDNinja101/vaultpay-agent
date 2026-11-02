@@ -23,6 +23,13 @@ def init_db():
     from models import Base as _Base  # noqa
     import models  # noqa: F401  (registers tables)
     Base.metadata.create_all(bind=engine)
+    # Tiny additive migration for DBs created before approve_link existed
+    # (create_all never alters existing tables). SQLite + Postgres syntax.
+    from sqlalchemy import inspect, text
+    cols = [c["name"] for c in inspect(engine).get_columns("orders")]
+    if "approve_link" not in cols:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE orders ADD COLUMN approve_link TEXT"))
 
 
 def get_db():
