@@ -21,11 +21,12 @@ PayPal **Orders v2** (sandbox) is the payment rail: server-side OAuth token, `PO
 An LLM parses natural-language rules into a validated JSON policy schema, ranks/explains catalogue picks, and turns the audit log into a plain-language summary. **Critically, the LLM never decides a spending verdict** — a deterministic, unit-tested policy engine does (blocked category → hard cap → seller rating → budget → ask-threshold → allow). Invalid or ambiguous LLM output falls back to ASK, never ALLOW. The app also runs with no LLM key via a deterministic local fallback parser.
 
 ## Tech
-Next.js + Tailwind · FastAPI · SQLAlchemy (SQLite locally, Postgres on Render) · PayPal Orders v2 + Webhooks · httpx · Pytest (policy-engine rules/boundaries + mock-mode end-to-end gate tests, 18 passing).
+Next.js + Tailwind · FastAPI · SQLAlchemy (SQLite locally, Neon Postgres in production) · Hosted on Vercel · PayPal Orders v2 + Webhooks · httpx · Pytest (policy-engine rules/boundaries + mock-mode end-to-end gate tests, 18 passing).
 
 ## Links (fill in)
-- Live demo: [PLACEHOLDER — Render frontend URL]
-- Repo: [PLACEHOLDER — public GitHub URL]
+- Live demo: https://vaultpay-agent-frontend.vercel.app
+- Backend API: https://vaultpay-agent-backend.vercel.app (health: /health)
+- Repo: https://github.com/INDNinja101/vaultpay-agent
 - Demo video (<3 min, public YouTube): [PLACEHOLDER]
 - Testing instructions: see README — seeded demo user, no login; sandbox buyer login [PLACEHOLDER after sandbox app creation].
 
