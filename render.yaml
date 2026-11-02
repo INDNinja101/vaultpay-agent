@@ -15,7 +15,7 @@ services:
       - key: PAYPAL_BASE_URL
         value: https://api-m.sandbox.paypal.com
       - key: PAYPAL_MOCK
-        value: "false"
+        value: "true"  # initial deploy runs in mock mode; flip to "false" in the dashboard after PAYPAL_CLIENT_ID/SECRET are pasted in
       - key: LLM_API_KEY
         sync: false
       - key: DATABASE_URL
