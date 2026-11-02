@@ -1,0 +1,11 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body { background: #0b1220; color: #e5e7eb; font-family: system-ui, sans-serif; }
+.card { background: #111827; border: 1px solid #1f2937; border-radius: 12px; padding: 16px; }
+.btn { background: #2563eb; color: white; padding: 8px 16px; border-radius: 8px; font-weight: 600; }
+.btn:hover { background: #1d4ed8; }
+.btn-danger { background: #374151; }
+.btn-danger:hover { background: #4b5563; }
+.input { background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 10px; width: 100%; color: #e5e7eb; }

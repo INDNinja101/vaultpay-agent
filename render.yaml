@@ -1,0 +1,32 @@
+services:
+  - type: web
+    name: vaultpay-backend
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false
+      - key: PAYPAL_WEBHOOK_ID
+        sync: false
+      - key: PAYPAL_BASE_URL
+        value: https://api-m.sandbox.paypal.com
+      - key: PAYPAL_MOCK
+        value: "false"
+      - key: LLM_API_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false  # set to the Render Postgres connection string for production; SQLite is used if unset
+
+  - type: web
+    name: vaultpay-frontend
+    runtime: node
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    startCommand: npm run start
+    envVars:
+      - key: NEXT_PUBLIC_API_URL
+        sync: false  # set to https://vaultpay-backend.onrender.com (your backend URL)
